@@ -2,7 +2,7 @@
 
 *(Basado en el proyecto académico: "Predicció de la victòria al League of Legends mitjançant Xarxes Bayesianes")*
 
-> **Consulta la presentación y los detalles visuales del modelo en:** [`presentacion_lol_2.pdf`](presentacion_lol_2.pdf)
+> **Consulta la presentación y los detalles visuales del modelo en:** [`presentacion_lol_2.pdf`](project_presentation.pdf)
 
 ## Objetivo del Proyecto
 El objetivo de este estudio es predecir la probabilidad de victoria del equipo azul en una partida de League of Legends **exactamente en el minuto 10**. Para ello, se analizan los factores más determinantes del juego temprano (early game) como la economía (oro y experiencia), el control de objetivos neutrales (dragones/heraldos) y la presión en el mapa.
