@@ -1,0 +1,513 @@
+---
+title: "practica_lol"
+author: "Pol Ortiz Escobar"
+date: "2026-03-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# LLEGIR DADES
+```{r}
+library(bnlearn)
+data<-read.csv("ranked_10min.csv")
+```
+
+
+# OUTLIERS
+```{r}
+qblue<-quantile(data$blueWardsPlaced, probs = c(0.025, 0.975))
+qred<-quantile(data$redWardsPlaced, probs = c(0.025, 0.975))
+
+data2<-data[data["blueWardsPlaced"] >= qblue[1] & data["blueWardsPlaced"] <= qblue[2] & data["redWardsPlaced"] >= qred[1] & data["redWardsPlaced"] <= qred[2], ]
+hist(data2$blueWardsPlaced, breaks = 90, col = "skyblue", main = "Histograma de Wards")
+hist(data2$redWardsPlaced, breaks = 90, col = "pink", main = "Histograma de Wards")
+
+
+quantile(data2$blueWardsPlaced, probs = c(1/5, 2/5, 3/5, 4/5))
+```
+
+# DISCRETIZAR VARIABLES CONTINUAS
+```{r}
+
+data2$blutotalgold <-abs(data2$blueTotalGold-data2$redTotalGold)
+
+vars_cont<-c("blueWardsPlaced", "blueWardsDestroyed", "blueAssists", "blueTotalGold", "blueTotalExperience", "blueTotalMinionsKilled", "blueTotalJungleMinionsKilled", "blueKills", "blueDeaths", "redWardsPlaced", "redWardsDestroyed", "redAssists","redTotalExperience", "redTotalMinionsKilled", "redTotalJungleMinionsKilled", "redKills", "redDeaths")
+
+vars_disc<-c("blueWins", "blueFirstBlood", "blueDragons", "blueHeralds", "redDragons", "redHeralds")
+
+towers_destroyed<-c("blueTowersDestroyed", "redTowersDestroyed")
+
+data_disc<-data2[vars_disc]
+
+for (v in vars_cont) {
+  nuevo_nombre <- paste0(v, "_disc")
+  puntos_corte <- unique(quantile(data2[[v]], 
+                                probs = seq(0, 1, length.out = 7), 
+                                na.rm = TRUE))
+  data_disc[[nuevo_nombre]] <- cut(data2[[v]], 
+                                breaks = puntos_corte, 
+                                include.lowest = TRUE, 
+                                labels = FALSE)
+}
+
+# Aplicar a ambos equipos
+for (v in towers_destroyed) {
+  nuevo_nombre <- paste0(v, "_disc")
+  data_disc[[nuevo_nombre]] <- ifelse(data2[[v]] >= 2, 2, data2[[v]])
+}
+```
+
+
+# DIVIDIR EN TRAIN Y TEST
+```{r}
+data_bn <- as.data.frame(lapply(data_disc, as.factor))
+
+n <- nrow(data_bn)
+n_entrenamiento <- round(0.8 * n)
+indices_entrenamiento <- sample(1:n, size = n_entrenamiento)
+
+data_bn_train <- data_bn[indices_entrenamiento, ]
+data_bn_test <- data_bn[-indices_entrenamiento, ]
+```
+
+
+# FEATURE SELECTION
+```{r}
+k <- 15 # num folds
+set.seed(123)
+
+indices <- sample(1:nrow(data_bn))
+folds <- cut(indices, breaks = k, labels = FALSE)
+
+lista_mb <- list()
+
+for(i in 1:k) {
+  datos_entrenamiento <- data_bn[folds != i, ]
+  dag_temp <- hc(datos_entrenamiento)
+  
+  # Extraemos el Markov Blanket de la victoria en esta división
+  lista_mb[[i]] <- mb(dag_temp, "blueWins")
+}
+
+# Unificamos todos los resultados en un solo vector
+todas_las_variables <- unlist(lista_mb)
+
+# Creamos una tabla de frecuencias
+frecuencia_features <- table(todas_las_variables)
+
+# Ordenamos para ver cuáles son las más estables
+frecuencia_features <- sort(frecuencia_features, decreasing = TRUE)
+features <- names(frecuencia_features)
+print(frecuencia_features)
+```
+
+
+# NAIVE BAYES
+## Amb feature selection:
+```{r}
+library(Rgraphviz)
+nb_reduit<-naive.bayes(data_bn_train[c("blueWins", features)], "blueWins")
+
+nb_reduit_params <- bn.fit(nb_reduit, 
+                     data = data_bn_train[c("blueWins", features)], 
+                     method = "bayes")
+graphviz.plot(nb_reduit_params,
+              shape = "rectangle",
+              # Definim un color neutre per a tots els nodes
+              highlight = list(nodes = nodes(nb_reduit_params), 
+                               fill = "aliceblue", 
+                               col = "darkblue"))
+
+```
+
+## Sense feature selection:
+```{r}
+nb_complet<-naive.bayes(data_bn_train, "blueWins")
+
+nb_complet_params <- bn.fit(nb_complet, 
+                     data = data_bn_train, 
+                     method = "bayes")
+
+graphviz.plot(nb_complet_params,
+              shape = "rectangle",
+              # Definim un color neutre per a tots els nodes
+              highlight = list(nodes = nodes(nb_complet_params), 
+                               fill = "aliceblue", 
+                               col = "darkblue"))
+```
+
+
+# AUGMENTED NAIVE BAYES
+
+## Amb feature selection:
+```{r}
+nb_inicial_reduit <- naive.bayes(data_bn_train[c("blueWins", features)], "blueWins")
+arcos_nb_reduit <- arcs(nb_inicial_reduit)
+anb_reduit <- hc(data_bn_train[c("blueWins", features)], whitelist = arcos_nb_reduit)
+
+anb_reduit_params <- bn.fit(anb_reduit, data = data_bn_train[c("blueWins", features)], method = "bayes")
+
+graphviz.plot(anb_reduit_params,
+              shape = "rectangle",
+              # Definim un color neutre per a tots els nodes
+              highlight = list(nodes = nodes(anb_reduit_params), 
+                               fill = "aliceblue", 
+                               col = "darkblue"))
+library(bnlearn)
+library(ggplot2)
+
+# Convertir blueWins a factor
+data_disc$blueWins <- as.factor(data_disc$blueWins)
+
+# Si vols assegurar-te que TOTA la base de dades està en el format correcte:
+data_disc <- as.data.frame(lapply(data_disc, as.factor))
+
+# 1. Llistem els nodes que influeixen en blueWins (excloent el propi node)
+nodes_a_testar <- setdiff(nodes(anb_reduit_params), "blueWins")
+
+# 2. Calculem la Informació Mútua (MI) per a cada node
+# Nota: Necessites el teu dataset de validació o entrenament (ex: data_disc)
+importancia <- sapply(nodes_a_testar, function(node) {
+  # Calculem el test de independència basada en MI
+  ci.test(node, "blueWins", data = data_disc, test = "mi")$statistic
+})
+
+# 3. Creem un dataframe per visualitzar els resultats
+df_importancia <- data.frame(
+  Variable = names(importancia),
+  Importancia = as.numeric(importancia)
+)
+
+# Ordenem de major a menor
+df_importancia <- df_importancia[order(-df_importancia$Importancia), ]
+
+# 4. Grafiquem els resultats
+ggplot(df_importancia, aes(x = reorder(Variable, Importancia), y = Importancia)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Importància dels Nodes (Informació Mútua)",
+    subtitle = "Influència directa sobre la Victòria Blava (blueWins)",
+    x = "Variable",
+    y = "Informació Mútua (G-test statistic)"
+  ) +
+  theme_minimal()
+
+```
+
+## Sense feature selection:
+```{r}
+nb_inicial_complet <- naive.bayes(data_bn_train, "blueWins")
+arcos_nb_complet <- arcs(nb_inicial_complet)
+anb_complet <- hc(data_bn_train, whitelist = arcos_nb_complet)
+
+anb_complet_params <- bn.fit(anb_complet, data = data_bn_train, method = "bayes")
+
+library(bnlearn)
+library(Rgraphviz)
+
+# Generem el gràfic sense cap highlight
+graphviz.plot(anb_complet_params,
+              shape = "rectangle",
+              # Definim un color neutre per a tots els nodes
+              highlight = list(nodes = nodes(anb_complet_params), 
+                               fill = "aliceblue", 
+                               col = "darkblue"))
+```
+
+## codigo alt.
+
+```{r}
+# --- 0. PREPARACIÓ I LLIBRERIES ---
+library(bnlearn) 
+library(gRain)
+library(pROC)
+
+# anb_reduit <- hc(data_bn_train[c("blueWins", features)], whitelist = arcos_nb_reduit)
+
+k <- 10
+folds <- cut(sample(1:nrow(data_bn)), breaks = k, labels = FALSE)
+
+# Estructures per guardar prediccions i reals
+preds_prob <- list(NB_Full = c(), ANB_Full = c(), NB_MB = c(), ANB_MB = c())
+reals <- c()
+
+for(i in 1:k) {
+  cat("Processant Fold", i, "de", k, "\n")
+  train <- data_bn[folds != i, ]
+  test <- data_bn[folds == i, ]
+  reals <- c(reals, as.numeric(as.character(test$blueWins)))
+  
+  # Definició dels 4 models
+  m1 <- naive.bayes(train, "blueWins")                       # NB Full
+  m2 <- hc(train, whitelist = arcos_nb_reduit)              # TAN Full
+  m3 <- naive.bayes(train[, nodes_mb], "blueWins")           # NB MB
+  m4 <- hc(train[c("blueWins", features)], whitelist = arcos_nb_reduit)   # TAN MB
+  
+  modelos_fold <- list(NB_Full = m1, ANB_Full = m2, NB_MB = m3, ANB_MB = m4)
+  
+  for(m_name in names(modelos_fold)) {
+    # Ajust i inferència exacta amb gRain
+    fit <- bn.fit(modelos_fold[[m_name]], data = train[, nodes(modelos_fold[[m_name]])], method = "bayes")
+    junction <- compile(as.grain(fit))
+    
+    pred_fold <- sapply(1:nrow(test), function(j) {
+      # Creem l'evidència excloent la variable objectiu
+      nodes_evidencia <- setdiff(nodes(modelos_fold[[m_name]]), "blueWins")
+      estats_evidencia <- as.character(unlist(test[j, nodes_evidencia]))
+      
+      # Per evitar errors si un estat no existeix al train (rar en n=6)
+      tryCatch({
+        evidencia <- setEvidence(junction, nodes = nodes_evidencia, states = estats_evidencia)
+        querygrain(evidencia, nodes = "blueWins")$blueWins["1"]
+      }, error = function(e) return(0.5)) # Si falla, probabilitat neutra
+    })
+    preds_prob[[m_name]] <- c(preds_prob[[m_name]], pred_fold)
+  }
+}
+
+# --- 3. CÀLCUL DE MÈTRIQUES FINALS ---
+
+# Funció Brier Score
+brier_score <- function(reals, probs) { mean((reals - probs)^2) }
+
+# Funció F1-Score
+calc_f1 <- function(reals, probs) {
+  preds <- ifelse(probs > 0.5, 1, 0)
+  t <- table(Factor_Pred = factor(preds, levels=c(0,1)), Factor_Real = factor(reals, levels=c(0,1)))
+  precision <- t[2,2] / sum(t[2,])
+  recall <- t[2,2] / sum(t[,2])
+  return(2 * (precision * recall) / (precision + recall))
+}
+
+# Calculem les mètriques per a cada model
+results_list <- lapply(names(preds_prob), function(m) {
+  p <- preds_prob[[m]]
+  acc <- mean(ifelse(p > 0.5, 1, 0) == reals)
+  roc_obj <- roc(reals, p, quiet = TRUE)
+  
+  if(grepl("MB", m)) { d_final <- data_bn[c("blueWins", features)] } else { d_final <- data_bn }
+  
+  if(grepl("ANB", m)) { final_struct <- hc(d_final) } 
+  else { final_struct <- naive.bayes(d_final, "blueWins") }
+  
+  data.frame(
+    Model = m,
+    Accuracy = round(acc * 100, 2),
+    AUC = round(auc(roc_obj), 3),
+    Brier = round(brier_score(reals, p), 3),
+    F1 = round(calc_f1(reals, p), 3),
+    Arcs = narcs(final_struct),
+    BIC = round(BIC(final_struct, d_final), 1),
+    LogLik = round(logLik(final_struct, d_final), 1)
+  )
+})
+
+resum_final <- do.call(rbind, results_list)
+print(resum_final)
+```
+
+
+```{r}
+# --- 0. PREPARACIÓ I LLIBRERIES ---
+library(bnlearn)
+library(gRain)
+library(pROC)
+
+k <- 10
+set.seed(123)
+folds <- cut(sample(1:nrow(data_bn)), breaks = k, labels = FALSE)
+
+# Estructures per a prediccions globals
+preds_prob <- list(NB_Full = c(), ANB_Full = c(), NB_MB = c(), ANB_MB = c())
+reals <- c()
+
+# Estructures per a mètriques per fold (necessàries per als tests estadístics)
+fold_metrics_acc <- data.frame(matrix(NA, nrow = k, ncol = 4,
+                                      dimnames = list(NULL, names(preds_prob))))
+fold_metrics_auc <- data.frame(matrix(NA, nrow = k, ncol = 4,
+                                      dimnames = list(NULL, names(preds_prob))))
+fold_metrics_brier <- data.frame(matrix(NA, nrow = k, ncol = 4,
+                                        dimnames = list(NULL, names(preds_prob))))
+
+# --- 1. BUCLE DE VALIDACIÓ CREUADA (10-FOLD CV) ---
+for(i in 1:k) {
+  cat("Processant Fold", i, "de", k, "\n")
+  train <- data_bn[folds != i, ]
+  test  <- data_bn[folds == i, ]
+  reals_fold <- as.numeric(as.character(test$blueWins))
+  reals <- c(reals, reals_fold)
+
+  m1 <- naive.bayes(train, "blueWins")
+  m2 <- hc(train, whitelist = arcos_nb_reduit)
+  m3 <- naive.bayes(train[, nodes_mb], "blueWins")
+  m4 <- hc(train[, c("blueWins", features)], whitelist = arcos_nb_reduit)
+
+  modelos_fold <- list(NB_Full = m1, ANB_Full = m2, NB_MB = m3, ANB_MB = m4)
+
+  for(m_name in names(modelos_fold)) {
+    fit      <- bn.fit(modelos_fold[[m_name]],
+                       data   = train[, nodes(modelos_fold[[m_name]])],
+                       method = "bayes")
+    junction <- compile(as.grain(fit))
+
+    pred_fold <- sapply(1:nrow(test), function(j) {
+      nodes_evidencia <- setdiff(nodes(modelos_fold[[m_name]]), "blueWins")
+      estats_evidencia <- as.character(unlist(test[j, nodes_evidencia]))
+      tryCatch({
+        evidencia <- setEvidence(junction,
+                                 nodes  = nodes_evidencia,
+                                 states = estats_evidencia)
+        querygrain(evidencia, nodes = "blueWins")$blueWins["1"]
+      }, error = function(e) 0.5)
+    })
+
+    preds_prob[[m_name]] <- c(preds_prob[[m_name]], pred_fold)
+
+    # ── Guardem mètriques per fold ──────────────────────────────────────────
+    fold_metrics_acc[i, m_name] <- mean(ifelse(pred_fold > 0.5, 1, 0) == reals_fold)
+    fold_metrics_auc[i, m_name] <- as.numeric(
+      auc(roc(reals_fold, pred_fold, quiet = TRUE))
+    )
+    fold_metrics_brier[i, m_name] <- mean((pred_fold - reals_fold)^2)
+  }
+}
+
+# --- 2. FUNCIONS DE MÈTRIQUES ---
+brier_score <- function(reals, probs) mean((reals - probs)^2)
+
+calc_f1 <- function(reals, probs) {
+  preds <- ifelse(probs > 0.5, 1, 0)
+  t <- table(Factor_Pred = factor(preds, levels = c(0,1)),
+             Factor_Real  = factor(reals,  levels = c(0,1)))
+  prec <- ifelse(sum(t[2,]) == 0, 0, t[2,2] / sum(t[2,]))
+  rec  <- ifelse(sum(t[,2]) == 0, 0, t[2,2] / sum(t[,2]))
+  if (prec + rec == 0) return(0)
+  2 * prec * rec / (prec + rec)
+}
+
+# --- 3. TAULA RESUM FINAL ---
+results_list <- lapply(names(preds_prob), function(m) {
+  p <- preds_prob[[m]]
+  if (grepl("MB", m))  d_final <- data_bn[, c("blueWins", features)] else d_final <- data_bn
+  if (grepl("ANB", m)) final_struct <- hc(d_final, whitelist = arcos_nb_reduit) else
+                        final_struct <- naive.bayes(d_final, "blueWins")
+  data.frame(
+    Model   = m,
+    Accuracy = round(mean(ifelse(p > 0.5, 1, 0) == reals) * 100, 2),
+    AUC      = round(as.numeric(auc(roc(reals, p, quiet = TRUE))), 3),
+    Brier    = round(brier_score(reals, p), 3),
+    F1       = round(calc_f1(reals, p), 3),
+    Arcs     = narcs(final_struct),
+    BIC      = round(BIC(final_struct, d_final), 1),
+    LogLik   = round(logLik(final_struct, d_final), 1)
+  )
+})
+resum_final <- do.call(rbind, results_list)
+cat("\n--- TAULA DE RESULTATS FINALS ---\n")
+print(resum_final)
+
+# --- 4. TESTS ESTADÍSTICS ---
+
+realitzar_tests <- function(metric_df, nom_metrica, higher_is_better = TRUE) {
+  cat("\n", strrep("=", 50))
+  cat("\nTESTS ESTADÍSTICS PER A:", nom_metrica)
+  cat("\n", strrep("=", 50), "\n")
+
+  # ── 1. Normalitat (Shapiro-Wilk) ──────────────────────────────────────────
+  cat("\n1. Test de normalitat (Shapiro-Wilk) per cada model:\n")
+  p_norm <- sapply(metric_df, function(x) shapiro.test(x)$p.value)
+  print(round(p_norm, 4))
+  tots_normals <- all(p_norm > 0.05)
+  cat("\nDecisió:", ifelse(tots_normals,
+                           "Totes normals → Paired t-test",
+                           "Alguna no normal → Wilcoxon signed-rank\n"))
+
+  # ── 2. Comparació de tots els parells (hipòtesi unilateral) ───────────────
+  # H0: Model A = Model B
+  # H1: Model A > Model B  (si higher_is_better)
+  # H1: Model A < Model B  (si !higher_is_better, és a dir, A té menor error)
+  cat("\n2. Comparació de tots els parells:\n")
+  cat("   Hipòtesi: el Model 1 és millor que el Model 2\n")
+  cat(sprintf("   %-20s %-20s %10s %10s  %s\n",
+              "Model 1 (millor?)", "Model 2", "Mitjana 1", "Mitjana 2", "p-value (unilateral)"))
+  cat("  ", strrep("-", 75), "\n")
+
+  models  <- names(metric_df)
+  parells <- combn(models, 2, simplify = FALSE)
+
+  resultats_parells <- lapply(parells, function(par) {
+    a <- par[1]; b <- par[2]
+    ma <- mean(metric_df[[a]]); mb <- mean(metric_df[[b]])
+
+    # Ordenem: el que sembla millor va primer (segons la direcció de la mètrica)
+    if (higher_is_better) {
+      if (mb > ma) { a <- par[2]; b <- par[1]; ma <- mean(metric_df[[a]]); mb <- mean(metric_df[[b]]) }
+      alternative <- "greater"   # H1: A > B
+    } else {
+      if (mb < ma) { a <- par[2]; b <- par[1]; ma <- mean(metric_df[[a]]); mb <- mean(metric_df[[b]]) }
+      alternative <- "less"      # H1: A < B (menor error és millor)
+    }
+
+    if (tots_normals) {
+      test  <- t.test(metric_df[[a]], metric_df[[b]],
+                      paired = TRUE, alternative = alternative)
+      tipus <- "t-test (unilateral)"
+    } else {
+      test  <- wilcox.test(metric_df[[a]], metric_df[[b]],
+                           paired = TRUE, exact = FALSE, alternative = alternative)
+      tipus <- "Wilcoxon (unilateral)"
+    }
+
+    sig <- ifelse(test$p.value < 0.001, "***",
+           ifelse(test$p.value < 0.01,  "**",
+           ifelse(test$p.value < 0.05,  "*", "ns")))
+
+    cat(sprintf("   %-20s %-20s %10.4f %10.4f  %.4f %s  [%s]\n",
+                a, b, ma, mb, test$p.value, sig, tipus))
+
+    data.frame(Model_1  = a,
+               Model_2  = b,
+               Mean_1   = round(ma, 4),
+               Mean_2   = round(mb, 4),
+               p_value  = round(test$p.value, 4),
+               Sig      = sig,
+               Test     = tipus,
+               stringsAsFactors = FALSE)
+  })
+
+  # ── 3. Resum interpretatiu ────────────────────────────────────────────────
+  cat("\n3. Resum interpretatiu:\n")
+  medies <- colMeans(metric_df)
+  cat("   · Mitjanes per model (de millor a pitjor):\n")
+  for (m in names(sort(medies, decreasing = higher_is_better))) {
+    cat(sprintf("      %s: %.4f\n", m, medies[m]))
+  }
+
+  res_df <- do.call(rbind, resultats_parells)
+  n_sig  <- sum(res_df$Sig != "ns")
+  n_tot  <- nrow(res_df)
+  cat(sprintf("\n   · %d de %d parells mostren que el Model 1 és significativament millor (p < 0.05)\n",
+              n_sig, n_tot))
+
+  if (n_sig == 0)
+    cat("   → Cap model supera significativament els altres.\n")
+  else if (n_sig == n_tot)
+    cat("   → Hi ha un ordre clar: cada model és significativament millor que el següent.\n")
+  else
+    cat("   → Alguns models es diferencien significativament, d'altres no.\n")
+
+  invisible(res_df)
+}
+
+# ── Executem els tests ─────────────────────────────────────────────────────
+res_acc   <- realitzar_tests(fold_metrics_acc,   "ACCURACY",    higher_is_better = TRUE)
+res_auc   <- realitzar_tests(fold_metrics_auc,   "AUC",         higher_is_better = TRUE)
+res_brier <- realitzar_tests(fold_metrics_brier, "BRIER SCORE", higher_is_better = FALSE)
+```
+
+
